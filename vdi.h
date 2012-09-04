@@ -320,11 +320,17 @@ vdi_verify(VDI *v)
   fragmentation = 0;
   for (i=0; i<v->blocks; i++)
     {
-      int	o;
+      long	o;
 
       o = get4at(&v->b->data[i*4]);
-      if (o==-1)
+      if (o == 0xffffffff)
 	continue;
+      if (o<0 || o>=v->blocks)
+	{
+          warn("illegal entry for block %d: %08lx (%s offset %llu)", i, o, v->b->f->name, (llu)(v->b->o+i*4));
+          warns++;
+	  continue;
+	}
       if (o!=frag)
         fragmentation++;
       frag = o+1;
@@ -353,10 +359,12 @@ vdi_verify(VDI *v)
     }
   if (warns)
     oops("verification failed, %d problems", warns);
-  if (fragmentation)
-    printf("block chain ok, %d fragments\n", fragmentation+1);
-  else
+  if (!fragmentation)
     printf("block chain ok, not fragmented\n");
+  else if (v->typ==1)
+    printf("block chain ok, %d fragments (ok for dynamic)\n", fragmentation+1);
+  else
+    printf("block chain ok, but %d fragments (not ok as type is not dynamic)\n", fragmentation+1);
   free0(ok, v->blocks);
 }
 

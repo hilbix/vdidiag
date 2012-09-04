@@ -82,6 +82,7 @@ outend(void)
 static void
 vout(const char *prefix, int e, const char *s, va_list list)
 {
+  fflush(stdout);
   if (prefix)
     fprintf(stderr, "%s: ", prefix);
   vfprintf(stderr, s, list);
