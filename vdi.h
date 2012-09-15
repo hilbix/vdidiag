@@ -178,8 +178,8 @@ vdi_open_f(VDI *v, struct vdi_file *f)
   v->maj	= get2(&p);
   v->min	= get2(&p);
   v->len	= get4(&p);
-  if (v->len!=0x190)
-    oops("VDI HEADER length mismatch, wanted 0x%x, is 0x%x", v->len);
+  if (v->len!=VDI_HEADER_LEN)
+    oops("VDI HEADER length mismatch, wanted 0x%x, is 0x%x", VDI_HEADER_LEN, v->len);
 
   v->typ	= get4(&p);
   v->flags	= get4(&p);
