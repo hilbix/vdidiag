@@ -8,7 +8,10 @@
 #include <stdint.h>
 
 #define	VDI_HEADER_MAGIC	0xbeda107f
-#define	VDI_HEADER_LEN		0x190
+#define	VDI_HEADER_LEN_MIN	0x180
+#define	VDI_HEADER_LEN_SEEN	0x190
+#define	VDI_HEADER_LEN_MAX	(VDI_HEADER_TOTAL-72)	/* correct?	*/
+#define	VDI_HEADER_TOTAL	512
 #define	VDI_HEADER_MAJOR	1
 #define	VDI_HEADER_MINOR	1
 static const char * const vdi_headers[] =
@@ -34,30 +37,32 @@ typedef struct vdi
     struct vdi_file	*f;
     struct vdi_block	*b;
 
-    unsigned char	hdr[64];
-    unsigned long	sig;		/* VDI_HEADER_MAGIC		*/
-    int			maj, min;	/* VDH_HEADER_MAJOR/MINOR	*/
-    long		len;		/* VDI_HEADER_LEN		*/
-    long		typ;		/* ?				*/
-    long		flags;		/* ?				*/
-    unsigned char	desc[256];	/* ?				*/
-    unsigned long	block;		/* offset to block info		*/
-    unsigned long	data;		/* offset to data		*/
-    long		cyl;		/* number of cylinders		*/
-    long		head;		/* number of heads to emulate	*/
-    long		sec;		/* number of sectors per track	*/
-    long		secsize;	/* number of bytes in a sector	*/
-    long		unk1;
-    int64_t		disksize;	/* Total size of the disk, in byte	*/
-    long		blocksize;	/* Size of a block: 1M		*/
-    long		extradata;	/* unknown			*/
-    long		blocks;		/* Number of blocks in image	*/
-    long		blockuse;	/* Total number of blocks used	*/
+    /*  0*/ unsigned char	hdr[64];
+    /* 64*/ unsigned long	sig;		/* VDI_HEADER_MAGIC		*/
+    /* 68*/ int			maj, min;	/* VDH_HEADER_MAJOR/MINOR	*/
+    /* len is calculated from here	*/
+    /* 72*/ long		len;		/* VDI_HEADER_LEN_MIN to _MAX	*/
+    /* 76*/ long		typ;		/* ?				*/
+    /* 80*/ long		flags;		/* ?				*/
+    /* 84*/ unsigned char	desc[256];	/* ?				*/
+    /*340*/ unsigned long	block;		/* offset to block info		*/
+    /*344*/ unsigned long	data;		/* offset to data		*/
+    /*348*/ long		cyl;		/* number of cylinders		*/
+    /*352*/ long		head;		/* number of heads to emulate	*/
+    /*356*/ long		sec;		/* number of sectors per track	*/
+    /*360*/ long		secsize;	/* number of bytes in a sector	*/
+    /*364*/ long		unk1;
+    /*368*/ int64_t		disksize;	/* Total size of the disk, in byte	*/
+    /*376*/ long		blocksize;	/* Size of a block: 1M		*/
+    /*380*/ long		extradata;	/* unknown			*/
+    /*384*/ long		blocks;		/* Number of blocks in image	*/
+    /*388*/ long		blockuse;	/* Total number of blocks used	*/
 
-    UUID	uuid, uusnap, uulink, uupar;
+    /*392*/ UUID		uuid, uusnap, uulink, uupar;
 
-    unsigned char	unk2[24];
-    unsigned char	unk3[32];
+    /*456*/ unsigned char	unk2[16];	/* no more in header len 0x180	*/
+    /*480*/ unsigned char	unk3[40];	/* no more in header len 0x190	*/
+    /*512*/
   } VDI;
 
 unsigned char
@@ -113,6 +118,7 @@ getn(void *to, const unsigned char **ptr, size_t len)
 void
 getu(UUID *u, const unsigned char **ptr)
 {
+  memset(u, 0, sizeof u);
   u->time_lo		= get4(ptr);
   u->time_mid		= get2(ptr);
   u->time_hi_vers	= get2(ptr);
@@ -159,14 +165,15 @@ checkheader(VDI *v)
 VDI *
 vdi_open_f(VDI *v, struct vdi_file *f)
 {
-  const unsigned char	*p;
+  const unsigned char	*p, *po;
 
   if (!v->init)
     vdi_init(v);
   vdi_close(v);
   v->f	= f;
 
-  p	= vdi_file_get(f, (int64_t)0, 512);
+  p	= vdi_file_get(f, (int64_t)0, VDI_HEADER_TOTAL);
+  po	= p;
 
   getn(v->hdr, &p, sizeof v->hdr);
   checkheader(v);
@@ -178,8 +185,10 @@ vdi_open_f(VDI *v, struct vdi_file *f)
   v->maj	= get2(&p);
   v->min	= get2(&p);
   v->len	= get4(&p);
-  if (v->len!=VDI_HEADER_LEN)
-    oops("VDI HEADER length mismatch, wanted 0x%x, is 0x%x", VDI_HEADER_LEN, v->len);
+  if (v->len<VDI_HEADER_LEN_MIN || v->len>VDI_HEADER_LEN_MAX)
+    oops("VDI HEADER length mismatch, wanted 0x%x to 0x%x, is 0x%x", VDI_HEADER_LEN_MIN, VDI_HEADER_LEN_MAX, v->len);
+  if (v->maj!=VDI_HEADER_MAJOR || v->min!=VDI_HEADER_MINOR)
+    warn("unsupported VDI HEADER VERSION %d.%d, wanted %d.%d", v->maj, v->min, VDI_HEADER_MAJOR, VDI_HEADER_MINOR);
 
   v->typ	= get4(&p);
   v->flags	= get4(&p);
@@ -208,6 +217,11 @@ vdi_open_f(VDI *v, struct vdi_file *f)
 
   getn(v->unk2, &p, sizeof v->unk2);
   getn(v->unk3, &p, sizeof v->unk3);
+#if 0
+  getn(v->unk4, &p, sizeof v->unk4);
+#endif
+  if (p-po!=VDI_HEADER_TOTAL)
+    oops("BUG: header size %d, but processed %d", VDI_HEADER_TOTAL, (int)(p-po));
 
   v->b		= vdi_file_block(v->f, v->block, v->blocks*4l);
   v->b->lock	= 1;
@@ -221,10 +235,26 @@ vdi_open(VDI *v, const char *name)
   return vdi_open_f(v, vdi_file_open(name));
 }
 
+int
+isnull(const void *p, size_t len)
+{
+  if (flag_verbose)
+    return 0;
+  if (!len)
+    return 1;
+  if (*(const char *)p)
+    return 0;
+  if (len==1)
+    return 1;
+  if (memcmp(p, ((const char *)p)+1, len-1))
+    return 0;
+  return 1;
+}
+
 void
 printn(const char *t, const unsigned char *p, size_t len)
 {
-  if (!flag_verbose && (!len || (!*p && (len==1 || !memcmp(p, p+1, len-1)))))
+  if (isnull(p, len))
     return;
   printf("%s", t);
   while (len--)
@@ -249,6 +279,8 @@ printx(unsigned const char *t, size_t len)
 void
 printu(const char *t, UUID *u)
 {
+  if (isnull(u, sizeof *u))
+    return;
   printf("%s%08lx-%04x-%04x-%02x%02x-", t, u->time_lo, u->time_mid, u->time_hi_vers, u->clock_hi_variant, u->clock_lo);
   printx(u->node, sizeof u->node);
   printf("\n");
@@ -296,6 +328,9 @@ vdi_info(VDI *v)
   printf("extradata    %lx\n", v->extradata);
   printn("unknown2              ", v->unk2, sizeof v->unk2);
   printn("unknown3              ", v->unk3, sizeof v->unk3);
+#if 0
+  printn("unknown4              ", v->unk4, sizeof v->unk4);
+#endif
 
   if (v->block>0x200)
     printb("gap: header to block  ", vdi_file_block(v->f, (int64_t)0x200, v->block-0x200));
